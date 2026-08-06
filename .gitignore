@@ -13,3 +13,5 @@
 
 # Local env
 *.local.yaml
+# Root working config (anchored so examples/bosun.yaml stays tracked)
+/bosun.yaml
