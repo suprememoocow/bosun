@@ -1,0 +1,48 @@
+[tools]
+go = "1.26.5"
+
+[tasks.build]
+description = "Build bosun and the plugin binaries into ./bin"
+run = "go build -o bin/ ./cmd/..."
+
+[tasks.test]
+description = "Run the test suite"
+run = "go test ./..."
+
+[tasks.test-race]
+description = "Run the test suite with the race detector"
+run = "go test -race ./..."
+
+[tasks.vet]
+description = "Run go vet"
+run = "go vet ./..."
+
+[tasks.fmt]
+description = "Format all Go sources in place"
+run = "gofmt -w ."
+
+[tasks.fmt-check]
+description = "Fail if any Go source is not gofmt-clean"
+run = '''
+unformatted="$(gofmt -l .)"
+if [ -n "$unformatted" ]; then
+  echo "not gofmt-clean:" >&2
+  echo "$unformatted" >&2
+  exit 1
+fi
+'''
+
+[tasks.tidy]
+description = "Tidy go.mod / go.sum"
+run = "go mod tidy"
+
+[tasks.verify]
+description = "Full check: fmt-check, vet, build, race tests (mirrors CI)"
+depends = ["fmt-check", "vet", "build", "test-race"]
+
+[tasks.run]
+description = "Build (incl. plugins) then run the bosun CLI from ./bin (pass args after --)"
+depends = ["build"]
+# Run the built binary so plugins are discoverable alongside it, rather than
+# `go run`'s throwaway temp binary.
+run = "./bin/bosun"

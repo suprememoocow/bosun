@@ -1,0 +1,15 @@
+# Build output (anchored to repo root so cmd/bosun* source dirs are not ignored)
+/bin/
+/dist/
+/bosun
+/bosun-plugin-*
+
+# Go
+*.test
+*.out
+
+# Conductor workspace scratch
+.context/
+
+# Local env
+*.local.yaml
