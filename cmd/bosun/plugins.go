@@ -60,13 +60,15 @@ func cmdPlugins(ctx context.Context, args []string) int {
 	return 0
 }
 
-// discoverPlugins finds bosun-plugin-* binaries, preferring the plugins dir (or
-// the executable's own dir) before $PATH, deduplicated by binary name.
+// discoverPlugins finds bosun-plugin-* binaries, searching the configured
+// plugins dir (if any), then always the executable's own dir, then $PATH,
+// deduplicated by binary name.
 func discoverPlugins(dir string) []string {
 	var dirs []string
 	if dir != "" {
 		dirs = append(dirs, dir)
-	} else if exe, err := os.Executable(); err == nil {
+	}
+	if exe, err := os.Executable(); err == nil {
 		dirs = append(dirs, filepath.Dir(exe))
 	}
 	dirs = append(dirs, filepath.SplitList(os.Getenv("PATH"))...)

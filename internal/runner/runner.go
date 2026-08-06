@@ -43,11 +43,12 @@ type Spec struct {
 	Timeout  time.Duration   // per-source; falls back to Runner.DefaultTimeout
 }
 
-// Runner executes plugins found relative to Dir (or $PATH).
+// Runner executes plugins found in Dir, alongside the bosun binary, or on $PATH.
 type Runner struct {
-	// Dir is plugins.dir. When empty it defaults to the directory of the running
-	// executable, so a plugin shipped alongside bosun is preferred over a stale
-	// one on $PATH (design doc open question 4).
+	// Dir is plugins.dir, searched first when set. The directory holding the
+	// bosun binary itself is *always* searched next, so a plugin shipped
+	// alongside bosun is found without configuration and is preferred over a
+	// stale one on $PATH (design doc open question 4).
 	Dir            string
 	DefaultTimeout time.Duration
 	MaxRecords     int
@@ -265,8 +266,8 @@ func (r *Runner) drainStderr(sourceID string, stderr io.Reader) {
 }
 
 // resolve finds the plugin binary for a spec: an explicit Command wins,
-// otherwise bosun-plugin-<type> is looked up in Dir (or the executable's dir)
-// first, then $PATH.
+// otherwise bosun-plugin-<type> is looked up in the configured Dir (if any),
+// then always in the directory holding the bosun binary, then on $PATH.
 func (r *Runner) resolve(spec Spec) (string, error) {
 	if spec.Command != "" {
 		return spec.Command, nil
@@ -276,13 +277,21 @@ func (r *Runner) resolve(spec Spec) (string, error) {
 	}
 	name := "bosun-plugin-" + spec.Type
 
-	dir := r.Dir
-	if dir == "" {
-		if exe, err := os.Executable(); err == nil {
-			dir = filepath.Dir(exe)
+	// Candidate directories in priority order: the configured plugins.dir, then
+	// the bosun binary's own directory (always checked). Duplicates are skipped
+	// so a plugins.dir that already is the exe dir is not reported twice.
+	var dirs []string
+	if r.Dir != "" {
+		dirs = append(dirs, r.Dir)
+	}
+	if exe, err := os.Executable(); err == nil {
+		exeDir := filepath.Dir(exe)
+		if len(dirs) == 0 || dirs[0] != exeDir {
+			dirs = append(dirs, exeDir)
 		}
 	}
-	if dir != "" {
+
+	for _, dir := range dirs {
 		cand := filepath.Join(dir, name)
 		if isExecutable(cand) {
 			return cand, nil
@@ -291,7 +300,21 @@ func (r *Runner) resolve(spec Spec) (string, error) {
 	if p, err := exec.LookPath(name); err == nil {
 		return p, nil
 	}
-	return "", fmt.Errorf("source %q: plugin %q not found in %q or $PATH", spec.SourceID, name, dir)
+
+	searched := "$PATH"
+	if len(dirs) > 0 {
+		searched = strings.Join(quoteAll(dirs), ", ") + " or $PATH"
+	}
+	return "", fmt.Errorf("source %q: plugin %q not found in %s", spec.SourceID, name, searched)
+}
+
+// quoteAll double-quotes each path for a readable error message.
+func quoteAll(paths []string) []string {
+	out := make([]string, len(paths))
+	for i, p := range paths {
+		out[i] = fmt.Sprintf("%q", p)
+	}
+	return out
 }
 
 func isExecutable(path string) bool {

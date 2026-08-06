@@ -174,8 +174,37 @@ func TestResolveFindsInDir(t *testing.T) {
 
 func TestResolveMissingFails(t *testing.T) {
 	r := &Runner{Dir: t.TempDir()}
-	if _, err := r.resolve(Spec{SourceID: "ghost", Type: "ghost"}); err == nil {
+	_, err := r.resolve(Spec{SourceID: "ghost", Type: "ghost"})
+	if err == nil {
 		t.Fatal("want not-found error")
+	}
+	// The error should name both the configured dir and $PATH so the operator
+	// can see where we looked.
+	if !strings.Contains(err.Error(), r.Dir) || !strings.Contains(err.Error(), "$PATH") {
+		t.Errorf("error should name searched locations, got: %v", err)
+	}
+}
+
+// TestResolveAlwaysChecksExeDir verifies a plugin shipped alongside the bosun
+// binary is found even when plugins.dir is set and does not contain it.
+func TestResolveAlwaysChecksExeDir(t *testing.T) {
+	exe, err := os.Executable()
+	if err != nil {
+		t.Skipf("cannot resolve test executable: %v", err)
+	}
+	exeDir := filepath.Dir(exe)
+	pluginPath := filepath.Join(exeDir, "bosun-plugin-exetest")
+	if err := os.WriteFile(pluginPath, []byte("#!/bin/sh\n:\n"), 0o755); err != nil {
+		t.Skipf("exe dir not writable (%v); skipping", err)
+	}
+	t.Cleanup(func() { os.Remove(pluginPath) })
+
+	// plugins.dir is a real but empty directory; resolution must still fall
+	// through to the exe dir.
+	r := &Runner{Dir: t.TempDir()}
+	got, err := r.resolve(Spec{SourceID: "s", Type: "exetest"})
+	if err != nil || got != pluginPath {
+		t.Fatalf("resolve = %q, %v; want %q", got, err, pluginPath)
 	}
 }
 
