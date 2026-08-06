@@ -66,6 +66,24 @@ func TestParseFullConfig(t *testing.T) {
 	}
 }
 
+func TestApplyDefaults(t *testing.T) {
+	// A minimal config with no plugins block should get plugin execution defaults.
+	yaml := "version: 1\nadguard: {address: x}\nsources:\n  - {id: s, type: t}\nadguard_clients:\n  sources: [s]"
+	cfg, _, err := Parse([]byte(yaml), LoadOptions{})
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if got := cfg.Plugins.Timeout.Duration(); got != defaultPluginTimeout {
+		t.Errorf("Timeout = %v, want %v", got, defaultPluginTimeout)
+	}
+	if cfg.Plugins.MaxConcurrency != defaultMaxConcurrency {
+		t.Errorf("MaxConcurrency = %d, want %d", cfg.Plugins.MaxConcurrency, defaultMaxConcurrency)
+	}
+	if cfg.Plugins.MaxRecords != defaultMaxRecords {
+		t.Errorf("MaxRecords = %d, want %d", cfg.Plugins.MaxRecords, defaultMaxRecords)
+	}
+}
+
 func TestValidateErrors(t *testing.T) {
 	tests := []struct {
 		name    string

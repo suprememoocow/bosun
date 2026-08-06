@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
+	"log/slog"
 	"os"
 
 	"github.com/suprememoocow/bosun/internal/adguard"
@@ -20,94 +22,86 @@ func cmdPlan(ctx context.Context, args []string) int {
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-
 	log := g.logger()
 
-	cfg, warnings, err := config.Load(g.config, config.LoadOptions{AllowCmd: g.allowCmd})
-	for _, w := range warnings {
-		log.Warn("config warning", "detail", w)
-	}
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "invalid config: %v\n", err)
-		return 1
-	}
-
 	switch *sinkFlag {
-	case "", "clients", "rewrites":
+	case "", "clients":
+	case "rewrites":
+		fmt.Fprintln(os.Stderr, "rewrites planning is implemented in M3")
+		return 1
 	default:
 		fmt.Fprintf(os.Stderr, "unknown sink %q (want clients or rewrites)\n", *sinkFlag)
 		return 2
 	}
 
-	if *sinkFlag == "rewrites" || (*sinkFlag == "" && cfg.Rewrites != nil && cfg.Clients == nil) {
-		fmt.Fprintln(os.Stderr, "rewrites planning is implemented in M3")
-		return 1
-	}
-
-	if cfg.Clients == nil {
-		fmt.Fprintln(os.Stderr, "no adguard_clients sink configured")
-		return 1
-	}
-
-	// Fetch each referenced source exactly once (design doc principle 2).
-	bySource, err := fetchSources(ctx, cfg, cfg.Clients.Sources, log)
+	in, err := loadClientsPlan(ctx, g, log)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		return 1
 	}
-
-	ag, err := adguard.New(cfg.Adguard.Address, cfg.Adguard.Username, cfg.Adguard.Password.Reveal())
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "%v\n", err)
-		return 1
-	}
-	live, err := ag.ListClients(ctx)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "reading live AdGuard clients: %v\n", err)
-		return 1
-	}
-
-	plan, err := clients.BuildPlan(cfg.Clients, bySource, live)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "building clients plan: %v\n", err)
-		return 1
-	}
-
-	if err := renderPlan(os.Stdout, plan, *output, g.noColor); err != nil {
+	if err := renderPlan(os.Stdout, in.plan, *output, g.noColor); err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		return 1
 	}
 	return 0
 }
 
-// fetchSources fetches the given source ids once each, keyed by id.
-func fetchSources(ctx context.Context, cfg *config.Config, ids []string, log logger) (map[string]source.Result, error) {
-	byID := map[string]config.Source{}
+// clientsPlanInputs bundles everything a plan or apply needs for the clients sink.
+type clientsPlanInputs struct {
+	cfg        *config.Config
+	ag         *adguard.Client
+	live       []adguard.PersistentClient
+	liveByName map[string]adguard.PersistentClient
+	plan       *clients.Plan
+}
+
+// loadClientsPlan loads config, fetches sources once, reads live AdGuard state
+// and builds the clients reconciliation plan. It makes no mutating calls.
+func loadClientsPlan(ctx context.Context, g *globalFlags, log *slog.Logger) (*clientsPlanInputs, error) {
+	cfg, warnings, err := config.Load(g.config, config.LoadOptions{AllowCmd: g.allowCmd})
+	for _, w := range warnings {
+		log.Warn("config warning", "detail", w)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("invalid config: %w", err)
+	}
+	if cfg.Clients == nil {
+		return nil, errors.New("no adguard_clients sink configured")
+	}
+
+	bySource, err := fetchSources(ctx, cfg, cfg.Clients.Sources, log)
+	if err != nil {
+		return nil, err
+	}
+
+	ag, err := adguard.New(cfg.Adguard.Address, cfg.Adguard.Username, cfg.Adguard.Password.Reveal())
+	if err != nil {
+		return nil, err
+	}
+	live, err := ag.ListClients(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("reading live AdGuard clients: %w", err)
+	}
+
+	plan, err := clients.BuildPlan(cfg.Clients, bySource, live)
+	if err != nil {
+		return nil, fmt.Errorf("building clients plan: %w", err)
+	}
+
+	byName := make(map[string]adguard.PersistentClient, len(live))
+	for _, c := range live {
+		byName[c.Name] = c
+	}
+	return &clientsPlanInputs{cfg: cfg, ag: ag, live: live, liveByName: byName, plan: plan}, nil
+}
+
+// fetchSources fetches the given source ids once each (bounded concurrency,
+// diagnostics logged), keyed by id — via the source.Fetcher, which dispatches
+// static sources inline and plugin sources through the runner.
+func fetchSources(ctx context.Context, cfg *config.Config, ids []string, log *slog.Logger) (map[string]source.Result, error) {
+	byID := make(map[string]config.Source, len(cfg.Sources))
 	for _, s := range cfg.Sources {
 		byID[s.ID] = s
 	}
-	results := map[string]source.Result{}
-	for _, id := range ids {
-		if _, done := results[id]; done {
-			continue
-		}
-		src, ok := byID[id]
-		if !ok {
-			return nil, fmt.Errorf("sink references unknown source %q", id)
-		}
-		res, err := source.Fetch(ctx, src)
-		if err != nil {
-			return nil, err
-		}
-		for _, d := range res.Diags {
-			log.Warn("record dropped", "source", id, "reason", d.Reason, "detail", d.Msg)
-		}
-		results[id] = res
-	}
-	return results, nil
-}
-
-// logger is the subset of *slog.Logger used here, kept small for readability.
-type logger interface {
-	Warn(msg string, args ...any)
+	return source.NewFetcher(cfg.Plugins, log).FetchAll(ctx, byID, ids)
 }

@@ -1,7 +1,7 @@
 // Command bosun reconciles desired network state into AdGuard Home config.
 //
-// In M0 the working verbs are `validate`, `plan` and `version`; `apply`,
-// `sources` and `plugins` are stubbed until later milestones (design doc §8).
+// Verbs: `plan`, `apply` (create/update only in M1), `validate`,
+// `sources run`, `plugins list`, `version` (design doc §8).
 package main
 
 import (
@@ -19,12 +19,12 @@ Usage:
   bosun <command> [flags]
 
 Commands:
-  plan       Show the reconciliation diff without mutating AdGuard (default)
-  validate   Parse and validate the configuration
-  apply      Apply the plan (not implemented until M1)
-  sources    Inspect sources (not implemented until M1)
-  plugins    Inspect plugins (not implemented until M1)
-  version    Print the version
+  plan             Show the reconciliation diff without mutating AdGuard
+  apply            Apply the plan (create/update; deletes/pruning land in M2)
+  validate         Parse and validate the configuration
+  sources run <id> Dump a source's raw NDJSON output (debugging)
+  plugins list     List discovered plugin binaries and their describe output
+  version          Print the version
 
 Run "bosun <command> -h" for command-specific flags.
 `
@@ -45,14 +45,17 @@ func run(args []string) int {
 	switch cmd {
 	case "plan":
 		return cmdPlan(ctx, rest)
+	case "apply":
+		return cmdApply(ctx, rest)
 	case "validate":
 		return cmdValidate(ctx, rest)
+	case "sources":
+		return cmdSources(ctx, rest)
+	case "plugins":
+		return cmdPlugins(ctx, rest)
 	case "version":
 		fmt.Println(version)
 		return 0
-	case "apply", "sources", "plugins":
-		fmt.Fprintf(os.Stderr, "bosun %s: not implemented yet\n", cmd)
-		return 1
 	case "-h", "--help", "help":
 		fmt.Fprint(os.Stdout, usage)
 		return 0
