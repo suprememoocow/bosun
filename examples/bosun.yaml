@@ -1,5 +1,8 @@
-# Example Bosun configuration using the built-in `static` source, which reads
-# records straight from config and is the permanent test-fixture mechanism.
+# Example Bosun configuration.
+#
+# Two sources: the built-in `static` source (records straight from config, the
+# permanent test-fixture mechanism) and the `omada` plugin (bosun-plugin-omada),
+# which reads DHCP reservations from a local Omada SDN controller.
 version: 1
 
 plugins:
@@ -26,8 +29,21 @@ sources:
         - name: laptop-v6-only
           ip: fd00::5 # dropped in v1 (IPv6), leaving no address -> record drops out
 
+  - id: omada
+    type: omada # resolves to the bosun-plugin-omada binary
+    config:
+      address: https://192.168.0.1:8043
+      username: ${env:OMADA_USER}
+      password: ${env:OMADA_PASSWORD}
+      site: Default
+      insecure_skip_verify: true # controller uses a self-signed cert
+      # dhcp_reservations only: stable and present for offline devices, so it
+      # plays well with prune. online_clients churns as devices sleep (§6.1).
+      include: [dhcp_reservations]
+
 adguard_clients:
-  sources: [fixture]
+  # Concatenated in order; earlier sources take precedence on conflict.
+  sources: [omada, fixture]
   filter:
     - cidr: 192.168.0.0/24
   managed_id_kinds: [ip, mac]

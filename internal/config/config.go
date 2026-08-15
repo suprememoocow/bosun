@@ -29,7 +29,17 @@ type Plugins struct {
 	Dir            string   `yaml:"dir"`
 	Timeout        Duration `yaml:"timeout"`
 	MaxConcurrency int      `yaml:"max_concurrency"`
+	// MaxRecords caps how many host records a single plugin may emit before the
+	// runner aborts it as a runaway (design doc §4.3).
+	MaxRecords int `yaml:"max_records"`
 }
+
+// Plugin execution defaults, applied when a field is left zero (design doc §5).
+const (
+	defaultPluginTimeout  = 30 * time.Second
+	defaultMaxConcurrency = 4
+	defaultMaxRecords     = 50000
+)
 
 // Adguard is the sink endpoint.
 type Adguard struct {
@@ -127,6 +137,19 @@ func (d *Duration) UnmarshalYAML(value *yaml.Node) error {
 	return nil
 }
 
+// applyDefaults fills in zero-valued plugin execution settings.
+func (c *Config) applyDefaults() {
+	if c.Plugins.Timeout == 0 {
+		c.Plugins.Timeout = Duration(defaultPluginTimeout)
+	}
+	if c.Plugins.MaxConcurrency == 0 {
+		c.Plugins.MaxConcurrency = defaultMaxConcurrency
+	}
+	if c.Plugins.MaxRecords == 0 {
+		c.Plugins.MaxRecords = defaultMaxRecords
+	}
+}
+
 // LoadOptions tunes loading.
 type LoadOptions struct {
 	// AllowCmd enables ${cmd:...} secret expansion.
@@ -160,6 +183,7 @@ func Parse(data []byte, opts LoadOptions) (*Config, []string, error) {
 	if err := root.Decode(&cfg); err != nil {
 		return nil, warnings, fmt.Errorf("decoding config: %w", err)
 	}
+	cfg.applyDefaults()
 
 	vWarnings, err := cfg.Validate()
 	warnings = append(warnings, vWarnings...)

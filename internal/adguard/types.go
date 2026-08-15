@@ -1,14 +1,47 @@
 package adguard
 
+import "encoding/json"
+
 // PersistentClient is an AdGuard Home persistent client. Its primary key is Name.
 //
-// In M0 only the fields the reconciler reasons about are modelled. Client
-// update is a full replacement (design doc §7.3), so preserving unmanaged
-// fields for the managed-field overlay is added with the write path in M2.
+// The reconciler reasons about Name/IDs/Tags, but client update is a full
+// replacement (design doc §7.3): sending a constructed object would clobber
+// fields the tool does not manage (blocked_services, upstreams, safe-search…).
+// Raw therefore preserves the complete live object so UpdateClient can overlay
+// only the managed field(s) and copy the rest through untouched.
 type PersistentClient struct {
 	Name string   `json:"name"`
 	IDs  []string `json:"ids"`
 	Tags []string `json:"tags,omitempty"`
+	// Raw is the full object as returned by AdGuard; excluded from marshalling
+	// (writes build their own bodies) and populated by UnmarshalJSON.
+	Raw map[string]json.RawMessage `json:"-"`
+}
+
+// UnmarshalJSON captures the whole object into Raw and mirrors the fields the
+// reconciler needs into typed fields.
+func (c *PersistentClient) UnmarshalJSON(data []byte) error {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	c.Raw = raw
+	if v, ok := raw["name"]; ok {
+		if err := json.Unmarshal(v, &c.Name); err != nil {
+			return err
+		}
+	}
+	if v, ok := raw["ids"]; ok {
+		if err := json.Unmarshal(v, &c.IDs); err != nil {
+			return err
+		}
+	}
+	if v, ok := raw["tags"]; ok {
+		if err := json.Unmarshal(v, &c.Tags); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // clientsResponse is the shape of GET /control/clients.

@@ -1,0 +1,41 @@
+{
+  "errorCode": 0,
+  "msg": "Success.",
+  "result": {
+    "totalRows": 3,
+    "currentPage": 1,
+    "currentSize": 100,
+    "data": [
+      {
+        "id": "res1",
+        "netId": "net-main",
+        "mac": "F0-2F-74-3B-65-6C",
+        "ip": "192.168.138.129",
+        "status": true,
+        "netName": "Main-LAN",
+        "clientName": "example-router",
+        "name": "example-router"
+      },
+      {
+        "id": "res2",
+        "netId": "net-iot",
+        "mac": "E8-9F-6D-85-9B-D8",
+        "ip": "192.168.150.11",
+        "status": true,
+        "netName": "IoT",
+        "clientName": "example-dimmer",
+        "name": ""
+      },
+      {
+        "id": "res3",
+        "netId": "net-iot",
+        "mac": "AA-BB-CC-DD-EE-FF",
+        "ip": "192.168.150.12",
+        "status": false,
+        "netName": "IoT",
+        "clientName": "disabled-device",
+        "name": "disabled-device"
+      }
+    ]
+  }
+}

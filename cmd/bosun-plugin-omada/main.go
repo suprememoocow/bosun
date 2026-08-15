@@ -1,14 +1,13 @@
-// Command bosun-plugin-omada is the Omada SDN controller source plugin.
-//
-// Implemented in milestone M1; see the design doc §6.1.
+// Command bosun-plugin-omada is the Omada SDN controller source plugin. It
+// emits one host record per enabled DHCP reservation (§6.1). The SDK handles
+// mode dispatch, the NDJSON envelope, and the completeness contract.
 package main
 
 import (
-	"fmt"
-	"os"
+	"github.com/suprememoocow/bosun/internal/omada"
+	"github.com/suprememoocow/bosun/pkg/plugin"
 )
 
 func main() {
-	fmt.Fprintln(os.Stderr, "bosun-plugin-omada: not implemented yet (milestone M1)")
-	os.Exit(1)
+	plugin.Main(omada.NewSource())
 }
