@@ -61,24 +61,18 @@ func (o ownership) owns(name string) bool {
 	return true
 }
 
-// diff computes the plan from desired and live state.
-func diff(sink *config.ClientsSink, desired []desiredClient, live []adguard.PersistentClient) (*Plan, error) {
-	managed := newManagedKinds(sink.ManagedIDKinds)
+// diff computes the plan from desired and live state. Name clashes are already
+// resolved and live clients already classified by the caller.
+func diff(sink *config.ClientsSink, desired []desiredClient, live []adguard.PersistentClient, liveByName map[string]adguard.PersistentClient, vetoed map[string]bool) (*Plan, error) {
 	own, err := compileOwnership(sink.Ownership)
 	if err != nil {
 		return nil, err
 	}
+	// Tags are only a managed field when the sink expresses tag intent via
+	// enrichment; otherwise hand-set tags on an owned client are left alone.
+	manageTags := len(sink.Enrichment) > 0
 
-	liveByName := make(map[string]adguard.PersistentClient, len(live))
-	vetoed := map[string]bool{}
-	for _, c := range live {
-		liveByName[c.Name] = c
-		if !managed.manageable(c.IDs) {
-			vetoed[c.Name] = true
-		}
-	}
-
-	plan := &Plan{}
+	plan := &Plan{ManageableLive: len(live) - len(vetoed)}
 	desiredNames := map[string]bool{}
 
 	for _, d := range desired {
@@ -86,21 +80,18 @@ func diff(sink *config.ClientsSink, desired []desiredClient, live []adguard.Pers
 		liveClient, exists := liveByName[d.Name]
 		switch {
 		case !exists:
-			plan.Actions = append(plan.Actions, Action{Op: OpCreate, Name: d.Name, IDs: d.IDs})
+			plan.Actions = append(plan.Actions, Action{Op: OpCreate, Name: d.Name, IDs: d.IDs, Tags: d.Tags})
 		case vetoed[d.Name]:
-			// Desired name collides with a vetoed live client, which cannot be
-			// updated or clobbered. Deterministic disambiguation is M2 (§7.2/§7.5);
-			// until then, refuse rather than risk destroying the live client.
-			return nil, fmt.Errorf("client %q collides with a hand-maintained (vetoed) client of the same name; disambiguation arrives in M2", d.Name)
-		case idsEqual(d.IDs, liveClient.IDs):
-			plan.Actions = append(plan.Actions, Action{Op: OpNoop, Name: d.Name, IDs: d.IDs})
+			// Clash resolution reserves vetoed names, so a desired name should
+			// never land on one. Guard defensively rather than clobber it.
+			return nil, fmt.Errorf("internal: desired %q collides with a vetoed live client after clash resolution", d.Name)
 		default:
-			plan.Actions = append(plan.Actions, Action{
-				Op:     OpUpdate,
-				Name:   d.Name,
-				IDs:    d.IDs,
-				Reason: fmt.Sprintf("ids %v -> %v", sortedCopy(liveClient.IDs), d.IDs),
-			})
+			reason, changed := updateReason(d, liveClient, manageTags)
+			if !changed {
+				plan.Actions = append(plan.Actions, Action{Op: OpNoop, Name: d.Name, IDs: d.IDs, Tags: d.Tags})
+				continue
+			}
+			plan.Actions = append(plan.Actions, Action{Op: OpUpdate, Name: d.Name, IDs: d.IDs, Tags: d.Tags, Reason: reason})
 		}
 	}
 
@@ -124,6 +115,19 @@ func diff(sink *config.ClientsSink, desired []desiredClient, live []adguard.Pers
 	sort.Strings(plan.Ignored)
 	sortActions(plan.Actions)
 	return plan, nil
+}
+
+// updateReason reports whether the managed fields of a desired client differ
+// from the live client, and a human-readable reason. Managed fields are the ids
+// (always) and the tags (only when the sink uses enrichment).
+func updateReason(d desiredClient, live adguard.PersistentClient, manageTags bool) (string, bool) {
+	if !idsEqual(d.IDs, live.IDs) {
+		return fmt.Sprintf("ids %v -> %v", sortedCopy(live.IDs), d.IDs), true
+	}
+	if manageTags && !idsEqual(d.Tags, live.Tags) {
+		return fmt.Sprintf("tags %v -> %v", sortedCopy(live.Tags), sortedCopy(d.Tags)), true
+	}
+	return "", false
 }
 
 // idsEqual compares two id lists as sets.

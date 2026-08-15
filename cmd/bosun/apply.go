@@ -17,6 +17,8 @@ func cmdApply(ctx context.Context, args []string) int {
 	fs := flag.NewFlagSet("apply", flag.ContinueOnError)
 	g := registerGlobal(fs)
 	autoApprove := fs.Bool("auto-approve", false, "apply without an interactive confirmation")
+	maxDeletes := fs.Int("max-deletes", -1, "abort if the plan deletes more than N clients (-1 = unlimited)")
+	maxDeleteFraction := fs.Float64("max-delete-fraction", 0.2, "abort if deletes exceed this fraction of manageable live clients")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -35,24 +37,43 @@ func cmdApply(ctx context.Context, args []string) int {
 	}
 
 	counts := in.plan.Counts()
-	changes := counts[clients.OpCreate] + counts[clients.OpUpdate]
+	changes := counts[clients.OpCreate] + counts[clients.OpUpdate] + counts[clients.OpDelete]
 	if changes == 0 {
 		fmt.Println("nothing to apply")
 		return 0
 	}
+
+	// Safety rails: abort before any mutation if the plan deletes too much (§7.6).
+	// The fraction is computed over manageable live clients only, so vetoed
+	// hand-maintained clients cannot dilute the guard.
+	if err := checkDeleteRails(counts[clients.OpDelete], in.plan.ManageableLive, *maxDeletes, *maxDeleteFraction); err != nil {
+		fmt.Fprintf(os.Stderr, "aborting: %v\n", err)
+		return 1
+	}
+
 	if !*autoApprove && !confirm(os.Stdin, os.Stdout) {
 		fmt.Println("aborted")
 		return 1
 	}
 
-	// Actions are already ordered create, update, delete (§7.6), so creates and
-	// updates land before any (skipped) delete.
+	useGlobal, filtering := createDefaults(in)
+	manageTags := len(in.cfg.Clients.Enrichment) > 0
+
+	// Actions are ordered create, update, delete (§7.6), so a rename (create+
+	// delete) never leaves a gap.
 	start := time.Now()
-	var created, updated, deletesSkipped, failed int
+	var created, updated, deleted, failed int
 	for _, a := range in.plan.Actions {
 		switch a.Op {
 		case clients.OpCreate:
-			if err := in.ag.AddClient(ctx, adguard.PersistentClient{Name: a.Name, IDs: a.IDs}); err != nil {
+			err := in.ag.AddClient(ctx, adguard.ClientCreate{
+				Name:              a.Name,
+				IDs:               a.IDs,
+				Tags:              a.Tags,
+				UseGlobalSettings: useGlobal,
+				FilteringEnabled:  filtering,
+			})
+			if err != nil {
 				log.Error("create failed", "name", a.Name, "err", err)
 				failed++
 			} else {
@@ -60,16 +81,19 @@ func cmdApply(ctx context.Context, args []string) int {
 			}
 		case clients.OpUpdate:
 			live := in.liveByName[a.Name]
-			if err := in.ag.UpdateClient(ctx, live, a.IDs); err != nil {
+			if err := in.ag.UpdateClient(ctx, live, a.IDs, a.Tags, manageTags); err != nil {
 				log.Error("update failed", "name", a.Name, "err", err)
 				failed++
 			} else {
 				updated++
 			}
 		case clients.OpDelete:
-			// Pruning + safety rails land in M2; never delete in M1.
-			log.Warn("skipping delete (pruning lands in M2)", "name", a.Name)
-			deletesSkipped++
+			if err := in.ag.DeleteClient(ctx, a.Name); err != nil {
+				log.Error("delete failed", "name", a.Name, "err", err)
+				failed++
+			} else {
+				deleted++
+			}
 		}
 	}
 
@@ -78,7 +102,7 @@ func cmdApply(ctx context.Context, args []string) int {
 		"sink", "clients",
 		"created", created,
 		"updated", updated,
-		"deletes_skipped", deletesSkipped,
+		"deleted", deleted,
 		"failed", failed,
 		"duration_ms", time.Since(start).Milliseconds(),
 	)
@@ -86,6 +110,38 @@ func cmdApply(ctx context.Context, args []string) int {
 		return 1
 	}
 	return 0
+}
+
+// checkDeleteRails enforces the delete backstops (§7.6).
+func checkDeleteRails(deletes, manageableLive, maxDeletes int, maxFraction float64) error {
+	if deletes == 0 {
+		return nil
+	}
+	if maxDeletes >= 0 && deletes > maxDeletes {
+		return fmt.Errorf("plan deletes %d clients, over --max-deletes=%d", deletes, maxDeletes)
+	}
+	if manageableLive > 0 {
+		frac := float64(deletes) / float64(manageableLive)
+		if frac > maxFraction {
+			return fmt.Errorf("plan deletes %d of %d manageable clients (%.0f%%), over --max-delete-fraction=%.2f",
+				deletes, manageableLive, frac*100, maxFraction)
+		}
+	}
+	return nil
+}
+
+// createDefaults resolves the client `defaults` for newly created clients,
+// falling back to inheriting global filtering so a new client is never created
+// with all protection off.
+func createDefaults(in *clientsPlanInputs) (useGlobal, filtering bool) {
+	useGlobal, filtering = true, true
+	if d := in.cfg.Clients.Defaults.UseGlobalSettings; d != nil {
+		useGlobal = *d
+	}
+	if d := in.cfg.Clients.Defaults.FilteringEnabled; d != nil {
+		filtering = *d
+	}
+	return useGlobal, filtering
 }
 
 // confirm reads a y/N answer from in, prompting on out. Anything but yes aborts.

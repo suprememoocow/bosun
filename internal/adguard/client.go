@@ -72,47 +72,61 @@ func (c *Client) ListRewrites(ctx context.Context) ([]Rewrite, error) {
 	return rewrites, nil
 }
 
-// clientAddBody is the create payload. use_global_settings is set so a new
-// client inherits global filtering rather than silently starting with all
-// protection off (per-client defaults become configurable in M2).
-type clientAddBody struct {
-	Name              string   `json:"name"`
-	IDs               []string `json:"ids"`
-	UseGlobalSettings bool     `json:"use_global_settings"`
-	FilteringEnabled  bool     `json:"filtering_enabled"`
+// ClientCreate is the payload for creating a persistent client. UseGlobalSettings
+// defaults to true so a new client inherits global filtering rather than silently
+// starting with all protection off; both flags come from the sink's `defaults`.
+type ClientCreate struct {
+	Name              string
+	IDs               []string
+	Tags              []string
+	UseGlobalSettings bool
+	FilteringEnabled  bool
 }
 
-// AddClient creates a persistent client from its name and ids.
-func (c *Client) AddClient(ctx context.Context, client PersistentClient) error {
-	body := clientAddBody{
-		Name:              client.Name,
-		IDs:               client.IDs,
-		UseGlobalSettings: true,
-		FilteringEnabled:  true,
+// AddClient creates a persistent client.
+func (c *Client) AddClient(ctx context.Context, cl ClientCreate) error {
+	body := struct {
+		Name              string   `json:"name"`
+		IDs               []string `json:"ids"`
+		Tags              []string `json:"tags,omitempty"`
+		UseGlobalSettings bool     `json:"use_global_settings"`
+		FilteringEnabled  bool     `json:"filtering_enabled"`
+	}{
+		Name:              cl.Name,
+		IDs:               cl.IDs,
+		Tags:              cl.Tags,
+		UseGlobalSettings: cl.UseGlobalSettings,
+		FilteringEnabled:  cl.FilteringEnabled,
 	}
 	return c.postJSON(ctx, "/control/clients/add", body, nil)
 }
 
-// UpdateClient replaces a live client, overlaying only its ids and copying every
-// other field through untouched. Client update is a full replacement (§7.3), so
-// the overlay starts from the live object's Raw to avoid clobbering fields the
-// tool does not manage.
-func (c *Client) UpdateClient(ctx context.Context, live PersistentClient, ids []string) error {
+// UpdateClient replaces a live client, overlaying the managed fields and copying
+// every other field through untouched. Client update is a full replacement
+// (§7.3), so the overlay starts from the live object's Raw to avoid clobbering
+// fields the tool does not manage. ids are always overlaid; tags are overlaid
+// only when the sink manages them (i.e. enrichment is configured).
+func (c *Client) UpdateClient(ctx context.Context, live PersistentClient, ids, tags []string, manageTags bool) error {
 	data := make(map[string]json.RawMessage, len(live.Raw)+1)
 	for k, v := range live.Raw {
 		data[k] = v
 	}
-	idsJSON, err := json.Marshal(ids)
-	if err != nil {
+	if err := setField(data, "ids", ids); err != nil {
 		return err
 	}
-	data["ids"] = idsJSON
-	if _, ok := data["name"]; !ok {
-		nameJSON, err := json.Marshal(live.Name)
-		if err != nil {
+	if manageTags {
+		// Marshal an empty tag set as [] (not null) so tags are actively cleared.
+		if tags == nil {
+			tags = []string{}
+		}
+		if err := setField(data, "tags", tags); err != nil {
 			return err
 		}
-		data["name"] = nameJSON
+	}
+	if _, ok := data["name"]; !ok {
+		if err := setField(data, "name", live.Name); err != nil {
+			return err
+		}
 	}
 	body := struct {
 		Name string                     `json:"name"`
@@ -121,8 +135,23 @@ func (c *Client) UpdateClient(ctx context.Context, live PersistentClient, ids []
 	return c.postJSON(ctx, "/control/clients/update", body, nil)
 }
 
-// DeleteClient is implemented in M2 (pruning).
-func (c *Client) DeleteClient(ctx context.Context, name string) error { return ErrNotImplemented }
+// DeleteClient removes a persistent client by name (pruning, §7.6).
+func (c *Client) DeleteClient(ctx context.Context, name string) error {
+	body := struct {
+		Name string `json:"name"`
+	}{Name: name}
+	return c.postJSON(ctx, "/control/clients/delete", body, nil)
+}
+
+// setField marshals v and stores it in data under key.
+func setField(data map[string]json.RawMessage, key string, v any) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+	data[key] = b
+	return nil
+}
 
 // AddRewrite is implemented in M3.
 func (c *Client) AddRewrite(ctx context.Context, r Rewrite) error { return ErrNotImplemented }

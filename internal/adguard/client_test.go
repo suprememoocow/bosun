@@ -63,14 +63,36 @@ func TestListClientsHTTPError(t *testing.T) {
 	}
 }
 
-func TestRemainingStubs(t *testing.T) {
+func TestRewriteStubs(t *testing.T) {
 	c, _ := New("http://localhost", "", "")
 	ctx := context.Background()
-	if err := c.DeleteClient(ctx, "x"); err != ErrNotImplemented {
-		t.Errorf("DeleteClient = %v, want ErrNotImplemented", err)
+	if err := c.AddRewrite(ctx, Rewrite{}); err != ErrNotImplemented {
+		t.Errorf("AddRewrite = %v, want ErrNotImplemented", err)
 	}
 	if err := c.DeleteRewrite(ctx, Rewrite{}); err != ErrNotImplemented {
 		t.Errorf("DeleteRewrite = %v, want ErrNotImplemented", err)
+	}
+}
+
+func TestDeleteClient(t *testing.T) {
+	var gotPath string
+	var gotBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		json.NewDecoder(r.Body).Decode(&gotBody)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	c, _ := New(srv.URL, "admin", "pw", WithHTTPClient(srv.Client()))
+	if err := c.DeleteClient(context.Background(), "oldlaptop"); err != nil {
+		t.Fatalf("DeleteClient: %v", err)
+	}
+	if gotPath != "/control/clients/delete" {
+		t.Errorf("path = %q", gotPath)
+	}
+	if gotBody["name"] != "oldlaptop" {
+		t.Errorf("name = %v", gotBody["name"])
 	}
 }
 
@@ -85,7 +107,14 @@ func TestAddClient(t *testing.T) {
 	defer srv.Close()
 
 	c, _ := New(srv.URL, "admin", "pw", WithHTTPClient(srv.Client()))
-	if err := c.AddClient(context.Background(), PersistentClient{Name: "nas", IDs: []string{"192.168.0.10"}}); err != nil {
+	err := c.AddClient(context.Background(), ClientCreate{
+		Name:              "nas",
+		IDs:               []string{"192.168.0.10"},
+		Tags:              []string{"device_nas"},
+		UseGlobalSettings: true,
+		FilteringEnabled:  true,
+	})
+	if err != nil {
 		t.Fatalf("AddClient: %v", err)
 	}
 	if gotPath != "/control/clients/add" {
@@ -97,6 +126,10 @@ func TestAddClient(t *testing.T) {
 	// A new client inherits global filtering rather than starting unprotected.
 	if gotBody["use_global_settings"] != true {
 		t.Errorf("use_global_settings = %v, want true", gotBody["use_global_settings"])
+	}
+	tags, _ := gotBody["tags"].([]any)
+	if len(tags) != 1 || tags[0] != "device_nas" {
+		t.Errorf("tags = %v, want [device_nas]", gotBody["tags"])
 	}
 }
 
@@ -130,7 +163,8 @@ func TestUpdateClientOverlayPreservesUnmanagedFields(t *testing.T) {
 	defer srv.Close()
 
 	c, _ := New(srv.URL, "admin", "pw", WithHTTPClient(srv.Client()))
-	if err := c.UpdateClient(context.Background(), live, []string{"192.168.0.10", "aa:bb:cc:dd:ee:ff"}); err != nil {
+	// manageTags=false: tags are not managed, so live tags are preserved.
+	if err := c.UpdateClient(context.Background(), live, []string{"192.168.0.10", "aa:bb:cc:dd:ee:ff"}, nil, false); err != nil {
 		t.Fatalf("UpdateClient: %v", err)
 	}
 
@@ -153,5 +187,43 @@ func TestUpdateClientOverlayPreservesUnmanagedFields(t *testing.T) {
 	json.Unmarshal(sent.Data["blocked_services"], &blocked)
 	if len(blocked) != 1 || blocked[0] != "youtube" {
 		t.Errorf("blocked_services = %v, want [youtube]", blocked)
+	}
+	// tags untouched (still the live value) when not managed.
+	var tags []string
+	json.Unmarshal(sent.Data["tags"], &tags)
+	if len(tags) != 1 || tags[0] != "device_nas" {
+		t.Errorf("tags = %v, want live [device_nas] preserved", tags)
+	}
+}
+
+func TestUpdateClientOverlaysTagsWhenManaged(t *testing.T) {
+	live := PersistentClient{}
+	json.Unmarshal([]byte(`{"name":"nas","ids":["192.168.0.10"],"tags":["os_linux"]}`), &live)
+
+	var sent struct {
+		Data map[string]json.RawMessage `json:"data"`
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewDecoder(r.Body).Decode(&sent)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	c, _ := New(srv.URL, "admin", "pw", WithHTTPClient(srv.Client()))
+	if err := c.UpdateClient(context.Background(), live, []string{"192.168.0.10"}, []string{"user_regular"}, true); err != nil {
+		t.Fatalf("UpdateClient: %v", err)
+	}
+	var tags []string
+	json.Unmarshal(sent.Data["tags"], &tags)
+	if len(tags) != 1 || tags[0] != "user_regular" {
+		t.Errorf("tags = %v, want [user_regular]", tags)
+	}
+
+	// Managing tags with an empty set clears them (sends [], not null).
+	if err := c.UpdateClient(context.Background(), live, []string{"192.168.0.10"}, nil, true); err != nil {
+		t.Fatalf("UpdateClient: %v", err)
+	}
+	if string(sent.Data["tags"]) != "[]" {
+		t.Errorf("cleared tags = %s, want []", sent.Data["tags"])
 	}
 }
