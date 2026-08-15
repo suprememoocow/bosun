@@ -1,14 +1,18 @@
 # Example Bosun configuration.
 #
-# Two sources: the built-in `static` source (records straight from config, the
+# Sources: the built-in `static` source (records straight from config, the
 # permanent test-fixture mechanism) and the `omada` plugin (bosun-plugin-omada),
 # which reads DHCP reservations from a local Omada SDN controller.
+#
+# Secrets use ${env:...} / ${file:...} expansion; `bosun validate` warns on any
+# plaintext password.
 version: 1
 
 plugins:
   dir: /usr/local/libexec/bosun
   timeout: 30s
   max_concurrency: 4
+  max_records: 50000 # per-source cap; a plugin exceeding it is a failed source
 
 adguard:
   address: ${env:ADGUARD_ADDRESS}
@@ -44,7 +48,51 @@ sources:
 adguard_clients:
   # Concatenated in order; earlier sources take precedence on conflict.
   sources: [omada, fixture]
+
+  # Predicate tree (implicit `all` at the top level): keep home-LAN devices,
+  # drop noisy per-app Android hostnames.
   filter:
-    - cidr: 192.168.0.0/24
+    - any:
+        - cidr: 192.168.0.0/24
+        - cidr: 192.168.30.0/24
+    - not:
+        name: "android-*"
+
+  # Applied to every client we create.
+  defaults:
+    use_global_settings: true
+    filtering_enabled: true
+
+  # Enrichment tags a client using AdGuard's fixed tag vocabulary. `set` replaces
+  # the tag set; `merge` unions into it. Rules run in order; all matching apply.
+  # (Tags are only reconciled on existing clients when enrichment is configured.)
+  enrichment:
+    - match: { label: { role: server } }
+      set:
+        tags: [device_other]
+    - match: { cidr: 192.168.30.0/24 }
+      merge:
+        tags: [user_child]
+
+  # Only ip/mac clients are managed; subnet/ClientID clients are vetoed outright.
   managed_id_kinds: [ip, mac]
+  on_mixed_ids: skip # a client mixing managed and unmanaged ids is left alone
+
+  # Two devices can share an Omada hostname across VLANs. On a name clash, prefix
+  # every member deterministically: try the template, then fall back to the
+  # MAC suffix (guaranteed unique). Non-clashing names are left untouched.
+  on_name_clash:
+    template: "{{ .Labels.omada_network }}-{{ .Name }}"
+    fallback: mac_suffix # mac_suffix | source | error
+
+  # Which live clients bosun may prune. include defaults to "*"; exclude protects
+  # hand-made clients whose names are predictable.
+  ownership:
+    include: ["*"]
+    exclude: ["guest-*"]
+
+  # Delete owned clients no longer present in the desired set. `apply` guards this
+  # with safety rails: --max-deletes N and --max-delete-fraction (default 0.2,
+  # over manageable live clients). To pin a hand-made client against pruning, add
+  # a /32 id to it in the AdGuard UI — that vetoes it (§7.4).
   prune: true

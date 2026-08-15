@@ -128,13 +128,9 @@ func TestDualHomedGroupsIntoOneClient(t *testing.T) {
 	}
 }
 
-func TestNameClashFailsInM0(t *testing.T) {
-	sink := &config.ClientsSink{Sources: []string{"f"}}
-	bySource := map[string]source.Result{"f": {Records: []hostrecord.Host{
-		rec("nas", "192.168.0.10", "aa:bb:cc:dd:ee:ff"),
-		rec("nas", "192.168.30.10", "11:22:33:44:55:66"), // same name, different MAC
-	}}}
-	if _, err := BuildPlan(sink, bySource, nil); err == nil {
-		t.Fatal("expected name clash error")
+func TestPreserveMixedIDsRefused(t *testing.T) {
+	sink := &config.ClientsSink{Sources: []string{"f"}, OnMixedIDs: "preserve"}
+	if _, err := BuildPlan(sink, map[string]source.Result{"f": {}}, nil); err == nil {
+		t.Fatal("expected preserve to be refused")
 	}
 }

@@ -57,6 +57,9 @@ func renderText(w io.Writer, plan *clients.Plan, noColor bool) error {
 		}
 		sym, col := symbol(a.Op)
 		line := fmt.Sprintf("  %s %-8s %-24s [%s]", sym, a.Op, a.Name, strings.Join(a.IDs, ", "))
+		if len(a.Tags) > 0 {
+			line += " tags:[" + strings.Join(a.Tags, ", ") + "]"
+		}
 		if a.Reason != "" {
 			line += "  (" + a.Reason + ")"
 		}
